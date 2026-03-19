@@ -1,0 +1,10 @@
+services:
+  opennotecloud:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - OPENNOTE_BASE_URL=https://your-server.example.com
+    restart: unless-stopped
