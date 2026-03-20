@@ -71,6 +71,39 @@ These are intentionally not implemented. This is a tablet sync server, not a ful
 
 - The official server signs upload/download URLs with a shared secret between the file service and the OSS (object storage) service. This server uses the JWT secret for URL signing since there's no separate storage service, it's all one binary.
 
+## Sync Protocol
+
+The tablet drives all sync logic. The server appears to be passive and just responds to queries.
+
+### Full sync flow
+
+1. Tablet calls `synchronous/start` to acquire a sync lock
+2. Tablet calls `list_folder` with `path:"/"` and `recursive:true` to get the full server file tree
+3. Tablet compares the server's file list against its local sync state (an internal DB on the tablet that tracks, last known path, last known hash, or other things.)
+4. For each file, the tablet classifies both the local and cloud state independently as one of: `NO_CHANGE`, `CREATE`, `DELETE`, `MODIFY`, `MOVE`, or `MOVE_MODIFY`
+5. The tablet applies a reconciliation matrix to decide what action to take
+6. Tablet calls `synchronous/end` with `flag:"Y"` on success or `flag:"N"` on failure
+
+### Reconciliation rules
+
+The tablet appears to evaluate each file as a (local_state, cloud_state) pair:
+
+| Local \ Cloud | NO_CHANGE | CREATE | DELETE | MODIFY | MOVE |
+|---|---|---|---|---|---|
+| **NO_CHANGE** | skip | download | delete local | download | local move |
+| **CREATE** | upload | conflict | upload | upload | upload |
+| **DELETE** | delete cloud | skip | skip | skip | skip |
+| **MODIFY** | upload | upload | upload | conflict | upload |
+| **MOVE** | cloud move | upload | upload | upload | conflict |
+
+A critical case is when the server doesn't list a file that the tablet previously synced (cloud_state=DELETE) and the local file hasn't changed (local_state=NO_CHANGE), the tablet deletes the local file. This is by design: it means the file was deleted on another device and the delete is propagating. Be careful to not lose data when tinkering on the server.
+
+Safety checks in the tablet firmware prevent deletion when:
+- The local file has been modified, moved, or created since the last sync (it gets re-uploaded instead)
+- The file is currently open on the tablet
+- A PDF's annotation `.mark` file has been modified (the PDF is re-uploaded instead)
+- A folder contains any child files with local changes (the folder is renamed with a conflict suffix instead)
+
 ## Architecture
 
 ~3,000 lines of Go. Flat `package main`, no framework, stdlib `net/http` router.

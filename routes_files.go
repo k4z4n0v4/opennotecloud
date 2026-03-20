@@ -136,6 +136,7 @@ func handleListFolderV2(cfg *Config) http.HandlerFunc {
 		equipmentNo := bodyStr(body, "equipmentNo")
 		path := strings.Trim(bodyStr(body, "path"), "/")
 		recursive := bodyBool(body, "recursive")
+		email, _, _, _ := lookupUserByID(userID)
 
 		dirID := int64(0)
 		if path != "" {
@@ -145,11 +146,11 @@ func handleListFolderV2(cfg *Config) http.HandlerFunc {
 				return
 			}
 		}
-		jsonSuccess(w, map[string]interface{}{"equipmentNo": equipmentNo, "entries": listEntriesV2(userID, dirID, path, recursive)})
+		jsonSuccess(w, map[string]interface{}{"equipmentNo": equipmentNo, "entries": listEntriesV2(userID, dirID, path, recursive, email, cfg)})
 	}
 }
 
-func listEntriesV2(userID, dirID int64, basePath string, recursive bool) []interface{} {
+func listEntriesV2(userID, dirID int64, basePath string, recursive bool, email string, cfg *Config) []interface{} {
 	rows, err := db.Query(`SELECT id, file_name, md5, size, is_folder, directory_id, updated_at FROM files WHERE user_id = ? AND directory_id = ? ORDER BY is_folder DESC, file_name`,
 		userID, dirID)
 	if err != nil {
@@ -172,13 +173,22 @@ func listEntriesV2(userID, dirID int64, basePath string, recursive bool) []inter
 			pathDisplay = basePath + "/" + name
 		}
 
+		// Only list files that actually exist on disk. Folders are always listed
+		// since they're structural. If we claim a file exists but can't serve it,
+		// the tablet will trust us and may delete its local copy during sync.
+		if isFolder != "Y" {
+			if _, err := os.Stat(getDiskPath(email, pathDisplay, cfg)); os.IsNotExist(err) {
+				continue
+			}
+		}
+
 		entries = append(entries, map[string]interface{}{
 			"tag": tag, "id": SnowflakeID(id), "name": name, "path_display": pathDisplay,
 			"content_hash": md5, "size": size, "lastUpdateTime": datetimeToEpochMillis(updatedAt),
 			"is_downloadable": true, "parent_path": basePath,
 		})
 		if recursive && isFolder == "Y" {
-			entries = append(entries, listEntriesV2(userID, id, pathDisplay, true)...)
+			entries = append(entries, listEntriesV2(userID, id, pathDisplay, true, email, cfg)...)
 		}
 	}
 	if entries == nil {
@@ -561,6 +571,7 @@ func handleListFolderV3(cfg *Config) http.HandlerFunc {
 		equipmentNo := bodyStr(body, "equipmentNo")
 		folderID := bodyInt(body, "id")
 		recursive := bodyBool(body, "recursive")
+		email, _, _, _ := lookupUserByID(userID)
 
 		var name string
 		var dirID int64
@@ -571,7 +582,7 @@ func handleListFolderV3(cfg *Config) http.HandlerFunc {
 			return
 		}
 		basePath := buildFullPath(userID, dirID, name)
-		jsonSuccess(w, map[string]interface{}{"equipmentNo": equipmentNo, "entries": listEntriesV2(userID, folderID, basePath, recursive)})
+		jsonSuccess(w, map[string]interface{}{"equipmentNo": equipmentNo, "entries": listEntriesV2(userID, folderID, basePath, recursive, email, cfg)})
 	}
 }
 
